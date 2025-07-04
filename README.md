@@ -8,3 +8,6 @@ This is a chess-bot like nextchessmove.com, but completely offline
   pip install python-chess stockfish
 
 Remember to edit the location of stockfish in the code.
+
+# TL/DR
+Download the given files, install stockfish and python-chess, edit the location of stockfish, and you'll be able to run the app
