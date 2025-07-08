@@ -1,5 +1,11 @@
 import tkinter as tk
 from tkinter import messagebox
+import sys
+import platform
+if platform.system() == "Windows":
+    import winsound
+else:
+    winsound = None
 import chess
 import chess.engine
 from PIL import Image, ImageTk
@@ -8,7 +14,7 @@ import threading
 
 # Set this to your Stockfish executable path (portable: always looks in the same folder as the script/exe)
 import os
-STOCKFISH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stockfish-windows-x86-64-avx2.exe") # Put stockfish's path here
+STOCKFISH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stockfish-windows-x86-64-avx2.exe")
 
 PIECE_IMAGES = {}
 PIECES = ['r', 'n', 'b', 'q', 'k', 'p', 'R', 'N', 'B', 'Q', 'K', 'P']
@@ -18,6 +24,43 @@ POLYGLOT_BOOK_PATH = r"C:\Users\hp\OneDrive\Desktop\Chess bot\komodo.bin"
 import chess.polyglot
 
 class ChessGUI:
+    def play_sound(self, sound_name):
+        """Play a sound effect from the sounds/ folder. sound_name: 'move', 'capture', 'check'"""
+        import os
+        sound_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds", f"{sound_name}.wav")
+        if not os.path.exists(sound_file):
+            # Uncomment the next line to debug missing sound files
+            # print(f"[SOUND] File not found: {sound_file}")
+            return  # No sound file, skip
+        try:
+            if winsound:
+                # Stop any currently playing sound first (to avoid overlap)
+                winsound.PlaySound(None, winsound.SND_PURGE)
+                winsound.PlaySound(sound_file, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            else:
+                # On Linux/Mac, try to use aplay/afplay if available
+                import subprocess
+                if sys.platform == "darwin":
+                    subprocess.Popen(["afplay", sound_file])
+                else:
+                    subprocess.Popen(["aplay", sound_file])
+        except Exception as e:
+            print(f"[SOUND ERROR] {e}")
+    def fen_entry_callback(self, event=None):
+        fen = self.fen_var.get().strip()
+        import chess
+        try:
+            board = chess.Board(fen)
+            if board.is_valid():
+                self.board = board
+                self.update_castling_vars_from_board()
+                self.draw_board()
+                self.calculate_and_show_best_move()
+                self.fen_entry.config(bg="#eaffea")  # light green for valid
+            else:
+                self.fen_entry.config(bg="#ffeaea")  # light red for invalid
+        except Exception:
+            self.fen_entry.config(bg="#ffeaea")  # light red for invalid
     def start_loading_animation(self):
         self._loading_anim_frames = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏']
         self._loading_anim_index = 0
@@ -124,6 +167,36 @@ class ChessGUI:
         self.selected = None
         self.squares = {}
         self.images = {}
+        # Points Match Mode (Ziffi Chess)
+        self.points_match_active = False
+        self.points_match_moves = 0
+        self.points_match_max_moves = 12
+        self.points_match_user_points = 0
+        self.points_match_engine_points = 0
+        self.points_match_tally_label = tk.Label(root, text="", font=("Arial", 12), fg="#800")
+        self.points_match_tally_label.grid(row=24, column=1, columnspan=2, sticky='w', pady=(2,2))
+        # Frame to hold both Points Match buttons side by side
+        self.points_match_btn_frame = tk.Frame(root)
+        self.points_match_btn_frame.grid(row=23, column=1, columnspan=2, sticky='w', pady=(2,2))
+        self.points_match_btn = tk.Button(self.points_match_btn_frame, text="Start Points Match (6 moves each)", state='disabled', command=self.start_points_match)
+        self.points_match_btn.pack(side='left')
+        self.exit_points_match_btn = tk.Button(self.points_match_btn_frame, text="Exit Points Match", command=self.exit_points_match, state='disabled')
+        self.exit_points_match_btn.pack(side='left', padx=(8,0))
+        # --- FEN Entry ---
+        self.fen_var = tk.StringVar()
+        fen_frame = tk.Frame(root)
+        fen_frame.grid(row=22, column=1, columnspan=2, sticky='ew', pady=(8,2))
+        tk.Label(fen_frame, text="FEN:").pack(side='left')
+        self.fen_entry = tk.Entry(fen_frame, textvariable=self.fen_var, width=70)
+        self.fen_entry.pack(side='left', fill='x', expand=True)
+        self.fen_entry.bind('<Return>', self.fen_entry_callback)
+        self.fen_entry.bind('<FocusOut>', self.fen_entry_callback)
+        self.fen_var.set(self.board.fen())
+        # Update FEN entry when board changes
+        def update_fen_entry(*args):
+            self.fen_var.set(self.board.fen())
+            self.fen_entry.config(bg="white")
+        self.update_fen_entry = update_fen_entry
         # --- Evaluation bar ---
         self.eval_bar_canvas = tk.Canvas(root, width=30, height=600, bg="#DDD", highlightthickness=0)
         self.eval_bar_canvas.grid(row=0, column=0, rowspan=22, sticky='nsw')
@@ -217,19 +290,32 @@ class ChessGUI:
         self.init_engine()
         self.draw_board()
         self.draw_palettes()
-        # Bind mouse events for drag-and-drop piece movement on the board
+        # Bind mouse events for drag-and-drop piece movement on the board (only once)
         self.canvas.bind('<ButtonPress-1>', self.on_piece_press)
         self.canvas.bind('<B1-Motion>', self.on_piece_drag)
         self.canvas.bind('<ButtonRelease-1>', self.on_piece_release)
         self.canvas.bind('<ButtonPress-3>', self.on_right_click)
         self.canvas.bind('<B3-Motion>', self.on_right_drag)
         self.canvas.bind('<ButtonRelease-3>', self.on_right_release)
-        # Bind left arrow key to go back one move
+        # Bind left arrow key to go back one move (only once)
         self.root.bind('<Left>', self.go_back_one_move)
         self.canvas.focus_set()
-        # Clear Arrows button
-        self.clear_arrows_btn = tk.Button(self.controls_frame, text="Clear Arrows", command=self.clear_arrows)
-        self.clear_arrows_btn.pack(pady=2, anchor='w')
+        # Clear Arrows button (only once)
+        if not hasattr(self, 'clear_arrows_btn'):
+            self.clear_arrows_btn = tk.Button(self.controls_frame, text="Clear Arrows", command=self.clear_arrows)
+            self.clear_arrows_btn.pack(pady=2, anchor='w')
+        # Start FEN sync loop
+        self.root.after(100, self._fen_sync_loop)
+
+        # --- App credit label ---
+        credit = tk.Label(self.root, text="App by Shishir", font=("Arial", 8), fg="#888", bg=self.root.cget('bg'))
+        credit.place(relx=1.0, rely=1.0, anchor='se', x=-8, y=-4)
+
+    def _fen_sync_loop(self):
+        # Keep FEN entry in sync with board (unless user is editing)
+        if self.fen_entry.focus_get() != self.fen_entry:
+            self.update_fen_entry()
+        self.root.after(500, self._fen_sync_loop)
     def init_engine(self):
         if self.engine is None:
             try:
@@ -242,6 +328,7 @@ class ChessGUI:
         self.update_castling_vars_from_board()
         self.draw_board()
         self.calculate_and_show_best_move()
+        self.update_fen_entry()
 
     def clear_board(self):
         # Remove all pieces (including kings) for full custom setup
@@ -249,10 +336,118 @@ class ChessGUI:
         self.update_castling_vars_from_board()
         self.draw_board()
         self.calculate_and_show_best_move()
+        self.update_fen_entry()
+        # Enable Points Match button after clearing board
+        self.points_match_btn.config(state='normal')
+    def start_points_match(self):
+        self.points_match_active = True
+        self.points_match_moves = 0
+        self.points_match_user_points = 0
+        self.points_match_engine_points = 0
+        self.points_match_btn.config(state='disabled')
+        self.exit_points_match_btn.config(state='normal')
+        self.status.config(text="Points Match started!", fg="#800")
+        self.update_points_match_tally()
+        # Decide who starts based on active_color
+        if (self.active_color.get() == 'w' and self.board.turn == chess.WHITE) or (self.active_color.get() == 'b' and self.board.turn == chess.BLACK):
+            # User to play first
+            pass
+        else:
+            # Engine to play first
+            self.root.after(500, self.points_match_engine_move)
+
+    def exit_points_match(self):
+        # Exit Points Match mode and return to normal play
+        self.points_match_active = False
+        self.points_match_moves = 0
+        self.points_match_user_points = 0
+        self.points_match_engine_points = 0
+        self.points_match_tally_label.config(text="Exited Points Match mode.")
+        self.status.config(text="Exited Points Match mode.", fg="#800")
+        self.points_match_btn.config(state='normal')
+        self.exit_points_match_btn.config(state='disabled')
+        self.draw_board()
+
+    def update_points_match_tally(self):
+        self.points_match_tally_label.config(text=f"Points Match: User {self.points_match_user_points} - Engine {self.points_match_engine_points} | Move {self.points_match_moves+1}/12")
+
+    def points_match_user_move(self, move):
+        # User plays a move in points match
+        captured = self.board.piece_at(move.to_square)
+        self.board.push(move)
+        if captured:
+            self.points_match_user_points += self.get_piece_value(captured)
+        self.points_match_moves += 1
+        self.update_points_match_tally()
+        self.draw_board()
+        if self.points_match_moves >= self.points_match_max_moves:
+            self.end_points_match()
+            return
+        self.root.after(500, self.points_match_engine_move)
+
+    def points_match_engine_move(self):
+        # Engine plays a move in points match
+        if not self.engine:
+            self.init_engine()
+        if not self.engine:
+            self.status.config(text="Engine not available.", fg="red")
+            return
+        # Use Stockfish to select the best move (normal analysis)
+        import chess
+        import chess.engine
+        board_fen = self.board.fen()
+        try:
+            with self.engine.analysis(chess.Board(board_fen), chess.engine.Limit(time=1), multipv=3) as analysis:
+                best_move = None
+                best_capture_value = -1
+                for info in analysis:
+                    if 'pv' in info and info['pv']:
+                        move = info['pv'][0]
+                        captured = self.board.piece_at(move.to_square)
+                        value = self.get_piece_value(captured) if captured else 0
+                        if value > best_capture_value:
+                            best_capture_value = value
+                            best_move = move
+                if not best_move:
+                    # fallback: pick any legal move
+                    best_move = next(iter(self.board.legal_moves))
+            captured = self.board.piece_at(best_move.to_square)
+            self.board.push(best_move)
+            if captured:
+                self.points_match_engine_points += self.get_piece_value(captured)
+            self.points_match_moves += 1
+            self.update_points_match_tally()
+            self.draw_board()
+            if self.points_match_moves >= self.points_match_max_moves:
+                self.end_points_match()
+                return
+            # User's turn next
+        except Exception as e:
+            self.status.config(text=f"Engine error: {e}", fg="red")
+
+    def end_points_match(self):
+        self.points_match_active = False
+        if self.points_match_user_points > self.points_match_engine_points:
+            winner = "User wins!"
+        elif self.points_match_user_points < self.points_match_engine_points:
+            winner = "Engine wins!"
+        else:
+            winner = "Draw!"
+        self.status.config(text=f"Points Match over! {winner}", fg="#800")
+        self.points_match_tally_label.config(text=f"Final: User {self.points_match_user_points} - Engine {self.points_match_engine_points}")
+        self.points_match_btn.config(state='normal')
+        self.exit_points_match_btn.config(state='disabled')
+
+    def get_piece_value(self, piece):
+        if not piece:
+            return 0
+        values = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3, chess.ROOK: 5, chess.QUEEN: 9}
+        return values.get(piece.piece_type, 0)
 
     def flip_board(self):
         self.flip = not self.flip
         self.draw_board()
+        self.update_fen_entry()
 
     def get_palette_pieces(self):
         # Returns (top_palette_pieces, bottom_palette_pieces) depending on flip
@@ -272,6 +467,7 @@ class ChessGUI:
         self.board.turn = (self.active_color.get() == 'w')
         self.draw_board()
         self.calculate_and_show_best_move()
+        self.update_fen_entry()
 
     def set_castling(self):
         # Set castling rights based on checkboxes
@@ -283,6 +479,7 @@ class ChessGUI:
         if self.castle_bq.get(): self.board.castling_rights |= chess.BB_A8
         self.draw_board()
         self.calculate_and_show_best_move()
+        self.update_fen_entry()
 
     def update_castling_vars_from_board(self):
         self.castle_wk.set(self.board.has_kingside_castling_rights(chess.WHITE))
@@ -291,6 +488,13 @@ class ChessGUI:
         self.castle_bq.set(self.board.has_queenside_castling_rights(chess.BLACK))
 
     def calculate_and_show_best_move(self):
+        # Clear all arrows when calculating next move
+        self.clear_arrows()
+        self.best_move_arrow = None  # For translucent best move arrow
+        # Remove all Points Mode logic and references to self.points_mode
+        # (Points Mode is deprecated; Points Match is the new mode)
+        # ...proceed to normal engine mode...
+        # --- Normal engine mode ---
         self.init_engine()
         if not self.engine:
             self.status.config(text="Engine not available.", fg="red")
@@ -299,6 +503,21 @@ class ChessGUI:
             return
         # Enhanced legality checks for custom positions
         try:
+            # --- Block engine analysis if user tries to calculate for the wrong side in check ---
+            user_color = self.active_color.get()
+            # If white is in check and user tries to analyze for black
+            if self.board.king(chess.WHITE) is not None and self.board.king(chess.BLACK) is not None:
+                if self.board.is_check() and self.board.turn == chess.WHITE and user_color == 'b':
+                    self.status.config(text="White in check!", fg="red")
+                    self.status.unbind("<Button-1>")
+                    self.update_eval_bar(None)
+                    return
+                # If black is in check and user tries to analyze for white
+                if self.board.is_check() and self.board.turn == chess.BLACK and user_color == 'w':
+                    self.status.config(text="Black in check!", fg="red")
+                    self.status.unbind("<Button-1>")
+                    self.update_eval_bar(None)
+                    return
             if not self.board.is_valid():
                 # More specific error reporting in terminal
                 print("[ERROR] Board is not valid. Possible reasons:")
@@ -384,9 +603,14 @@ class ChessGUI:
                     if best_move_san:
                         self.status.config(text=f"Best move: {best_move_san}{depth_str}", fg="blue")
                         self.status.bind("<Button-1>", lambda e: self.play_best_move(best_move))
+                        # Show translucent arrow for best move
+                        from_sq = best_move.from_square
+                        to_sq = best_move.to_square
+                        self.best_move_arrow = (from_sq, to_sq)
                     else:
                         self.status.config(text="No best move found.", fg="red")
                         self.status.unbind("<Button-1>")
+                        self.best_move_arrow = None
                     # Show second best move below, smaller font, and make it clickable
                     if second_move_san:
                         self.second_move_label.config(text=f"Second best: {second_move_san}")
@@ -395,6 +619,7 @@ class ChessGUI:
                         self.second_move_label.config(text="")
                         self.second_move_label.unbind("<Button-1>")
                     self.update_eval_bar(result)
+                    self.draw_board()  # Redraw to show best move arrow
                 self.root.after(0, update)
             except Exception as e:
                 def update():
@@ -414,11 +639,11 @@ class ChessGUI:
         bar_top = 60
         bar_left = 5
         bar_width = 20
-        # Colors: white = #F0D9B5, black = #B58863, green = #6FCF97, red = #EB5757
-        color_white = "#F0D9B5"
-        color_black = "#B58863"
-        color_green = "#6FCF97"
-        color_red = "#EB5757"
+        # Colors: white = #B58863, black = #F0D9B5, green = #EB5757, red = #6FCF97 (swapped)
+        color_white = "#B58863"  # now brown for white
+        color_black = "#F0D9B5"  # now tan for black
+        color_green = "#EB5757"  # now red for white mate/advantage
+        color_red = "#6FCF97"    # now green for black mate/advantage
         # Default: gray bar (no eval)
         if not engine_result or 'score' not in engine_result:
             self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill="#BBB", outline="#AAA")
@@ -471,11 +696,31 @@ class ChessGUI:
     def play_best_move(self, move):
         # Play the move if legal, then force turn to selected color (for custom play)
         if move in self.board.legal_moves:
+            # Clear all arrows (user and best move) before making the move
+            self.arrows.clear()
+            self.best_move_arrow = None
+            captured = self.board.piece_at(move.to_square)
+            # Detect castling before making the move
+            is_castle = False
+            piece = self.board.piece_at(move.from_square)
+            if piece and piece.piece_type == chess.KING:
+                if abs(chess.square_file(move.from_square) - chess.square_file(move.to_square)) == 2:
+                    is_castle = True
             self.board.push(move)
+            # Play sound: castle, check, capture, or move
+            if is_castle:
+                self.play_sound('castle')
+            elif self.board.is_check():
+                self.play_sound('check')
+            elif captured:
+                self.play_sound('capture')
+            else:
+                self.play_sound('move')
             # Force turn to selected color for custom play
             self.board.turn = (self.active_color.get() == 'w')
             self.draw_board()
             self.calculate_and_show_best_move()
+            self.update_fen_entry()
         else:
             self.status.config(text="Move not legal for current side to move!", fg="red")
             self.status.unbind("<Button-1>")
@@ -527,6 +772,7 @@ class ChessGUI:
         # Draw arrows
         def square_center(col, row):
             return col*60+30, row*60+30
+        # Draw user arrows
         for from_sq, to_sq in self.arrows:
             from_col, from_row = chess.square_file(from_sq), 7 - chess.square_rank(from_sq)
             to_col, to_row = chess.square_file(to_sq), 7 - chess.square_rank(to_sq)
@@ -536,6 +782,18 @@ class ChessGUI:
             x1, y1 = square_center(from_col, from_row)
             x2, y2 = square_center(to_col, to_row)
             self._draw_arrow(x1, y1, x2, y2, color="#2600ff", width=5)
+        # Draw best move thin light arrow if present
+        if hasattr(self, 'best_move_arrow') and self.best_move_arrow:
+            from_sq, to_sq = self.best_move_arrow
+            from_col, from_row = chess.square_file(from_sq), 7 - chess.square_rank(from_sq)
+            to_col, to_row = chess.square_file(to_sq), 7 - chess.square_rank(to_sq)
+            if getattr(self, 'flip', False):
+                from_col, from_row = 7 - from_col, 7 - from_row
+                to_col, to_row = 7 - to_col, 7 - to_row
+            x1, y1 = square_center(from_col, from_row)
+            x2, y2 = square_center(to_col, to_row)
+            # Draw a thin, light blue arrow (no dash)
+            self._draw_arrow(x1, y1, x2, y2, color="#99ccff", width=5)
         # Draw arrow being dragged
         if self.arrow_drag is not None:
             x1, y1 = square_center(*self.arrow_drag['from'])
@@ -561,8 +819,30 @@ class ChessGUI:
         self.draw_palettes()
 
     def _draw_arrow(self, x1, y1, x2, y2, color="#1201ff", width=5, dash=None):
-        # Draw main line
-        self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width, arrow=tk.LAST, arrowshape=(16,20,6), capstyle=tk.ROUND, dash=dash)
+        # If the arrow is a knight move, draw an L-shaped arrow
+        def is_knight_move(x1, y1, x2, y2):
+            dx = abs(x2 - x1)
+            dy = abs(y2 - y1)
+            # Each square is 60x60, so knight moves are (1,2) or (2,1) squares
+            return (dx == 60 and dy == 120) or (dx == 120 and dy == 60)
+
+        if is_knight_move(x1, y1, x2, y2):
+            # Draw an L-shaped arrow for knight moves
+            # Determine the intermediate corner point
+            if abs(x2 - x1) == 60:
+                # Horizontal first, then vertical
+                mid_x = x2
+                mid_y = y1
+            else:
+                # Vertical first, then horizontal
+                mid_x = x1
+                mid_y = y2
+            # Draw two segments: start to corner, corner to end
+            self.canvas.create_line(x1, y1, mid_x, mid_y, fill=color, width=width, capstyle=tk.ROUND, dash=dash)
+            self.canvas.create_line(mid_x, mid_y, x2, y2, fill=color, width=width, arrow=tk.LAST, arrowshape=(16,20,6), capstyle=tk.ROUND, dash=dash)
+        else:
+            # Draw main line for non-knight moves
+            self.canvas.create_line(x1, y1, x2, y2, fill=color, width=width, arrow=tk.LAST, arrowshape=(16,20,6), capstyle=tk.ROUND, dash=dash)
 
     def clear_arrows(self):
         self.arrows.clear()
@@ -653,17 +933,26 @@ class ChessGUI:
             self.board.remove_piece_at(from_square)
             self.draw_board()
             self.calculate_and_show_best_move()
+            self.play_sound('move')
             self.drag_data = None
             return
         to_square = chess.square(board_col, 7 - board_row)
         # Allow moving any piece to any square (custom setup style)
         # If a piece exists at the destination, replace it
         moving_piece = self.drag_data['piece']
+        captured = self.board.piece_at(to_square)
         self.board.remove_piece_at(to_square)
         self.board.remove_piece_at(from_square)
         self.board.set_piece_at(to_square, moving_piece)
         self.draw_board()
         self.calculate_and_show_best_move()
+        # Play sound: check, capture, or move
+        if self.board.is_check():
+            self.play_sound('check')
+        elif captured:
+            self.play_sound('capture')
+        else:
+            self.play_sound('move')
         self.drag_data = None
 
     def update_best_move(self):
