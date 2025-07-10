@@ -24,6 +24,19 @@ POLYGLOT_BOOK_PATH = r"C:\Users\hp\OneDrive\Desktop\Chess bot\komodo.bin"
 import chess.polyglot
 
 class ChessGUI:
+    # --- Board themes ---
+    BOARD_THEMES = {
+        "Classic": ("#F0D9B5", "#B58863"),
+        "Blue": ("#aad4ff", "#3a6ea5"),
+        "Green": ("#d2ecd2", "#5ca05c"),
+        "Gray": ("#e0e0e0", "#888888"),
+        "Brown": ("#f5deb3", "#8b5a2b"),
+        "Purple": ("#e5d6ff", "#7c4dff"),
+        "Pink": ("#ffe0ef", "#e75480"),
+        "Orange": ("#ffe5b4", "#ff9900"),
+        "Red": ("#ffd6d6", "#c0392b"),
+    }
+
     def play_sound(self, sound_name):
         """Play a sound effect from the sounds/ folder. sound_name: 'move', 'capture', 'check'"""
         import os
@@ -136,7 +149,7 @@ class ChessGUI:
         if self.arrow_drag is not None:
             from_col, from_row = self.arrow_drag['from']
             to_col, to_row = self.arrow_drag['to']
-            # Only add arrow if drag distance is significant and within board
+            # Only add/remove arrow if drag distance is significant and within board
             if (0 <= from_col < 8 and 0 <= from_row < 8 and
                 0 <= to_col < 8 and 0 <= to_row < 8 and
                 (from_col != to_col or from_row != to_row)):
@@ -154,7 +167,9 @@ class ChessGUI:
                 from_sq = chess.square(board_from_col, 7 - board_from_row)
                 to_sq = chess.square(board_to_col, 7 - board_to_row)
                 arrow = (from_sq, to_sq)
-                if arrow not in self.arrows:
+                if arrow in self.arrows:
+                    self.arrows.remove(arrow)
+                else:
                     self.arrows.append(arrow)
             self.arrow_drag = None
         self._right_click_start = None
@@ -167,21 +182,6 @@ class ChessGUI:
         self.selected = None
         self.squares = {}
         self.images = {}
-        # Points Match Mode (Ziffi Chess)
-        self.points_match_active = False
-        self.points_match_moves = 0
-        self.points_match_max_moves = 12
-        self.points_match_user_points = 0
-        self.points_match_engine_points = 0
-        self.points_match_tally_label = tk.Label(root, text="", font=("Arial", 12), fg="#800")
-        self.points_match_tally_label.grid(row=24, column=1, columnspan=2, sticky='w', pady=(2,2))
-        # Frame to hold both Points Match buttons side by side
-        self.points_match_btn_frame = tk.Frame(root)
-        self.points_match_btn_frame.grid(row=23, column=1, columnspan=2, sticky='w', pady=(2,2))
-        self.points_match_btn = tk.Button(self.points_match_btn_frame, text="Start Points Match (6 moves each)", state='disabled', command=self.start_points_match)
-        self.points_match_btn.pack(side='left')
-        self.exit_points_match_btn = tk.Button(self.points_match_btn_frame, text="Exit Points Match", command=self.exit_points_match, state='disabled')
-        self.exit_points_match_btn.pack(side='left', padx=(8,0))
         # --- FEN Entry ---
         self.fen_var = tk.StringVar()
         fen_frame = tk.Frame(root)
@@ -197,6 +197,9 @@ class ChessGUI:
             self.fen_var.set(self.board.fen())
             self.fen_entry.config(bg="white")
         self.update_fen_entry = update_fen_entry
+
+        # --- Always keep board and FEN in sync after any manual move or edit ---
+        self._sync_fen_after_move = True
         # --- Evaluation bar ---
         self.eval_bar_canvas = tk.Canvas(root, width=30, height=600, bg="#DDD", highlightthickness=0)
         self.eval_bar_canvas.grid(row=0, column=0, rowspan=22, sticky='nsw')
@@ -287,9 +290,37 @@ class ChessGUI:
         self.arrows = []  # List of (from_square, to_square)
         self.arrow_drag = None  # {'from': (col, row), 'to': (col, row)}
 
+        # Board theme selection
+        # Use a traceable StringVar for theme, set default, and ensure event bindings are set at startup
+        self.board_theme_name = tk.StringVar()
+        self.board_theme_name.set("Classic")
+        theme_frame = tk.Frame(self.controls_frame)
+        theme_frame.pack(pady=(8,2), anchor='w')
+        tk.Label(theme_frame, text="Board Theme:").pack(side='left')
+        self.theme_menu = tk.OptionMenu(theme_frame, self.board_theme_name, *self.BOARD_THEMES.keys(), command=self.on_theme_change)
+        self.theme_menu.pack(side='left')
+
         self.init_engine()
         self.draw_board()
         self.draw_palettes()
+        # --- Ensure all event bindings are set at startup, not just on theme change ---
+        self.canvas.bind('<ButtonPress-1>', self.on_piece_press)
+        self.canvas.bind('<B1-Motion>', self.on_piece_drag)
+        self.canvas.bind('<ButtonRelease-1>', self.on_piece_release)
+        self.canvas.bind('<ButtonPress-3>', self.on_right_click)
+        self.canvas.bind('<B3-Motion>', self.on_right_drag)
+        self.canvas.bind('<ButtonRelease-3>', self.on_right_release)
+        self.root.bind('<Left>', self.go_back_one_move)
+        self.canvas.focus_set()
+        if not hasattr(self, 'clear_arrows_btn'):
+            self.clear_arrows_btn = tk.Button(self.controls_frame, text="Clear Arrows", command=self.clear_arrows)
+            self.clear_arrows_btn.pack(pady=2, anchor='w')
+        self.root.after(100, self._fen_sync_loop)
+        credit = tk.Label(self.root, text="App by Shishir", font=("Arial", 8), fg="#888", bg=self.root.cget('bg'))
+        credit.place(relx=1.0, rely=1.0, anchor='se', x=-8, y=-4)
+
+    def on_theme_change(self, *args):
+        self.draw_board()
         # Bind mouse events for drag-and-drop piece movement on the board (only once)
         self.canvas.bind('<ButtonPress-1>', self.on_piece_press)
         self.canvas.bind('<B1-Motion>', self.on_piece_drag)
@@ -337,17 +368,7 @@ class ChessGUI:
         self.draw_board()
         self.calculate_and_show_best_move()
         self.update_fen_entry()
-        # Enable Points Match button after clearing board
-        self.points_match_btn.config(state='normal')
-    def start_points_match(self):
-        self.points_match_active = True
-        self.points_match_moves = 0
-        self.points_match_user_points = 0
-        self.points_match_engine_points = 0
-        self.points_match_btn.config(state='disabled')
-        self.exit_points_match_btn.config(state='normal')
-        self.status.config(text="Points Match started!", fg="#800")
-        self.update_points_match_tally()
+    
         # Decide who starts based on active_color
         if (self.active_color.get() == 'w' and self.board.turn == chess.WHITE) or (self.active_color.get() == 'b' and self.board.turn == chess.BLACK):
             # User to play first
@@ -356,43 +377,6 @@ class ChessGUI:
             # Engine to play first
             self.root.after(500, self.points_match_engine_move)
 
-    def exit_points_match(self):
-        # Exit Points Match mode and return to normal play
-        self.points_match_active = False
-        self.points_match_moves = 0
-        self.points_match_user_points = 0
-        self.points_match_engine_points = 0
-        self.points_match_tally_label.config(text="Exited Points Match mode.")
-        self.status.config(text="Exited Points Match mode.", fg="#800")
-        self.points_match_btn.config(state='normal')
-        self.exit_points_match_btn.config(state='disabled')
-        self.draw_board()
-
-    def update_points_match_tally(self):
-        self.points_match_tally_label.config(text=f"Points Match: User {self.points_match_user_points} - Engine {self.points_match_engine_points} | Move {self.points_match_moves+1}/12")
-
-    def points_match_user_move(self, move):
-        # User plays a move in points match
-        captured = self.board.piece_at(move.to_square)
-        self.board.push(move)
-        if captured:
-            self.points_match_user_points += self.get_piece_value(captured)
-        self.points_match_moves += 1
-        self.update_points_match_tally()
-        self.draw_board()
-        if self.points_match_moves >= self.points_match_max_moves:
-            self.end_points_match()
-            return
-        self.root.after(500, self.points_match_engine_move)
-
-    def points_match_engine_move(self):
-        # Engine plays a move in points match
-        if not self.engine:
-            self.init_engine()
-        if not self.engine:
-            self.status.config(text="Engine not available.", fg="red")
-            return
-        # Use Stockfish to select the best move (normal analysis)
         import chess
         import chess.engine
         board_fen = self.board.fen()
@@ -424,20 +408,6 @@ class ChessGUI:
             # User's turn next
         except Exception as e:
             self.status.config(text=f"Engine error: {e}", fg="red")
-
-    def end_points_match(self):
-        self.points_match_active = False
-        if self.points_match_user_points > self.points_match_engine_points:
-            winner = "User wins!"
-        elif self.points_match_user_points < self.points_match_engine_points:
-            winner = "Engine wins!"
-        else:
-            winner = "Draw!"
-        self.status.config(text=f"Points Match over! {winner}", fg="#800")
-        self.points_match_tally_label.config(text=f"Final: User {self.points_match_user_points} - Engine {self.points_match_engine_points}")
-        self.points_match_btn.config(state='normal')
-        self.exit_points_match_btn.config(state='disabled')
-
     def get_piece_value(self, piece):
         if not piece:
             return 0
@@ -633,17 +603,28 @@ class ChessGUI:
         threading.Thread(target=analyse_in_thread, args=(self.board.fen(), think_time), daemon=True).start()
 
     def update_eval_bar(self, engine_result):
-        '''Draws a chess.com-style evaluation bar on self.eval_bar_canvas.'''
+        '''Draws a chess.com-style evaluation bar on self.eval_bar_canvas, using the current board theme colors.'''
         self.eval_bar_canvas.delete("all")
         bar_height = 480
         bar_top = 60
         bar_left = 5
         bar_width = 20
-        # Colors: white = #B58863, black = #F0D9B5, green = #EB5757, red = #6FCF97 (swapped)
-        color_white = "#B58863"  # now brown for white
-        color_black = "#F0D9B5"  # now tan for black
-        color_green = "#EB5757"  # now red for white mate/advantage
-        color_red = "#6FCF97"    # now green for black mate/advantage
+
+        # Get current board theme colors
+        theme = self.BOARD_THEMES.get(self.board_theme_name.get(), ("#F0D9B5", "#B58863"))
+        color_light = theme[0]
+        color_dark = theme[1]
+
+        # For mate/advantage highlight, use a strong color that fits the theme
+        # We'll use the dark color for white advantage, light color for black advantage, but also overlay a tint for clarity
+        # You can customize these for each theme if desired
+        color_white_adv = color_dark  # Top (white advantage)
+        color_black_adv = color_light  # Bottom (black advantage)
+
+        # Overlay highlight colors for mate (try to keep them visible on all themes)
+        color_mate_white = "#6FCF97"  # greenish for white mate
+        color_mate_black = "#EB5757"  # reddish for black mate
+
         # Default: gray bar (no eval)
         if not engine_result or 'score' not in engine_result:
             self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill="#BBB", outline="#AAA")
@@ -655,12 +636,12 @@ class ChessGUI:
             mate_in = score.mate()
             if mate_in is not None:
                 if mate_in > 0:
-                    # White mates: full green bar
-                    self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_green, outline="#AAA")
+                    # White mates: full green bar (mate for white)
+                    self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_mate_white, outline="#AAA")
                     self.eval_bar_canvas.create_text(bar_left+bar_width//2, bar_top+20, text=f"M{mate_in}", font=("Arial", 12), fill="#000")
                 else:
-                    # Black mates: full red bar
-                    self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_red, outline="#AAA")
+                    # Black mates: full red bar (mate for black)
+                    self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_mate_black, outline="#AAA")
                     self.eval_bar_canvas.create_text(bar_left+bar_width//2, bar_top+bar_height-20, text=f"M{abs(mate_in)}", font=("Arial", 12), fill="#FFF")
             return
         # Centipawn score: map to bar
@@ -675,17 +656,17 @@ class ChessGUI:
         white_height = int(bar_height * (1000 - cp) / 2000)
         black_height = bar_height - white_height
         # Draw white part (top)
-        self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+white_height, fill=color_white, outline="#AAA")
+        self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+white_height, fill=color_white_adv, outline="#AAA")
         # Draw black part (bottom)
-        self.eval_bar_canvas.create_rectangle(bar_left, bar_top+white_height, bar_left+bar_width, bar_top+bar_height, fill=color_black, outline="#AAA")
-        # Draw a green or red highlight if the eval is very high/low
+        self.eval_bar_canvas.create_rectangle(bar_left, bar_top+white_height, bar_left+bar_width, bar_top+bar_height, fill=color_black_adv, outline="#AAA")
+        # Draw a highlight if the eval is very high/low
         if cp >= 900:
             # Almost winning for white
-            self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_green, outline="#AAA")
+            self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_mate_white, outline="#AAA")
             self.eval_bar_canvas.create_text(bar_left+bar_width//2, bar_top+20, text=f"+{cp//100}", font=("Arial", 12), fill="#000")
         elif cp <= -900:
             # Almost winning for black
-            self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_red, outline="#AAA")
+            self.eval_bar_canvas.create_rectangle(bar_left, bar_top, bar_left+bar_width, bar_top+bar_height, fill=color_mate_black, outline="#AAA")
             self.eval_bar_canvas.create_text(bar_left+bar_width//2, bar_top+bar_height-20, text=f"{cp//100}", font=("Arial", 12), fill="#FFF")
         else:
             # Draw score text in the middle
@@ -746,7 +727,9 @@ class ChessGUI:
                 PIECE_IMAGES[piece] = None
 
     def draw_board(self, dragging_piece=None, dragging_pos=None):
-        colors = ["#F0D9B5", "#B58863"]
+        # Use selected theme
+        theme = self.BOARD_THEMES.get(self.board_theme_name.get(), ("#F0D9B5", "#B58863"))
+        colors = [theme[0], theme[1]]
         self.canvas.delete("all")
         # Draw squares and pieces
         for row in range(8):
@@ -817,6 +800,10 @@ class ChessGUI:
         self.update_points_label()
         self.root.update_idletasks()
         self.draw_palettes()
+
+        # --- Always update FEN entry after any board change ---
+        if getattr(self, '_sync_fen_after_move', False):
+            self.update_fen_entry()
 
     def _draw_arrow(self, x1, y1, x2, y2, color="#1201ff", width=5, dash=None):
         # If the arrow is a knight move, draw an L-shaped arrow
@@ -935,6 +922,7 @@ class ChessGUI:
             self.calculate_and_show_best_move()
             self.play_sound('move')
             self.drag_data = None
+            self.update_fen_entry()  # Always sync FEN after manual edit
             return
         to_square = chess.square(board_col, 7 - board_row)
         # Allow moving any piece to any square (custom setup style)
@@ -954,6 +942,7 @@ class ChessGUI:
         else:
             self.play_sound('move')
         self.drag_data = None
+        self.update_fen_entry()  # Always sync FEN after manual edit
 
     def update_best_move(self):
         import threading
